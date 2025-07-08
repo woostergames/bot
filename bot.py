@@ -4,21 +4,57 @@ import httpx
 import aiofiles
 import json
 import os
-from flask import Flask
+from flask import Flask, request
 import threading
 import asyncio
+import requests
 
 # Initialize Discord bot
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents)
 
-# Initialize Flask app for Render health check
+# Initialize Flask app for Render health check and OAuth2 callback
 app = Flask(__name__)
 
 @app.route('/')
 def health_check():
     return "Bot is running!", 200
+
+@app.route('/oauth/callback')
+def oauth_callback():
+    """Handle Discord OAuth2 callback."""
+    code = request.args.get('code')
+    guild_id = request.args.get('guild_id')
+    permissions = request.args.get('permissions')
+    if code:
+        # Exchange code for access token
+        data = {
+            'client_id': os.getenv('CLIENT_ID'),
+            'client_secret': os.getenv('CLIENT_SECRET'),
+            'grant_type': 'authorization_code',
+            'code': code,
+            'redirect_uri': 'https://bot-ytz9.onrender.com/oauth/callback',
+            'scope': 'bot'
+        }
+        headers = {'Content-Type': 'application/x-www-form-urlencoded'}
+        response = requests.post('https://discord.com/api/oauth2/token', data=data, headers=headers)
+        if response.status_code == 200:
+            token_data = response.json()
+            # Optionally add bot to guild (requires guild_id and bot token)
+            bot_token = os.getenv('DISCORD_TOKEN')
+            headers = {'Authorization': f'Bot {bot_token}'}
+            join_response = requests.put(
+                f'https://discord.com/api/guilds/{guild_id}/members/@me',
+                headers=headers,
+                json={'access_token': token_data['access_token']}
+            )
+            return f"Token received: {token_data}, Join guild: {join_response.text}"
+        return f"Token exchange failed: {response.text}", 400
+    error = request.args.get('error')
+    if error:
+        return f"OAuth error: {error} - {request.args.get('error_description')}", 400
+    return "Error: No code provided", 400
 
 # ScoreSaber and BeatLeader API endpoints
 SCORESABER_API = "https://scoresaber.com/api"
