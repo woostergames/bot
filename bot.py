@@ -28,32 +28,30 @@ def oauth_callback():
     guild_id = request.args.get('guild_id')
     permissions = request.args.get('permissions')
     if code:
-        # Exchange code for access token
-        data = {
-            'client_id': os.getenv('CLIENT_ID'),
-            'client_secret': os.getenv('CLIENT_SECRET'),
-            'grant_type': 'authorization_code',
-            'code': code,
-            'redirect_uri': 'https://bot-ytz9.onrender.com/oauth/callback',
-            'scope': 'bot'
-        }
-        headers = {'Content-Type': 'application/x-www-form-urlencoded'}
-        response = requests.post('https://discord.com/api/oauth2/token', data=data, headers=headers)
-        if response.status_code == 200:
+        try:
+            # Exchange code for access token
+            data = {
+                'client_id': os.getenv('CLIENT_ID'),
+                'client_secret': os.getenv('CLIENT_SECRET'),
+                'grant_type': 'authorization_code',
+                'code': code,
+                'redirect_uri': 'https://bot-ytz9.onrender.com/oauth/callback',
+                'scope': 'bot'
+            }
+            headers = {'Content-Type': 'application/x-www-form-urlencoded'}
+            response = requests.post('https://discord.com/api/oauth2/token', data=data, headers=headers)
+            response.raise_for_status()
             token_data = response.json()
-            # Optionally add bot to guild (requires guild_id and bot token)
-            bot_token = os.getenv('DISCORD_TOKEN')
-            headers = {'Authorization': f'Bot {bot_token}'}
-            join_response = requests.put(
-                f'https://discord.com/api/guilds/{guild_id}/members/@me',
-                headers=headers,
-                json={'access_token': token_data['access_token']}
-            )
-            return f"Token received: {token_data}, Join guild: {join_response.text}"
-        return f"Token exchange failed: {response.text}", 400
+            print(f"Token exchange successful: {token_data}")
+            return f"Bot authorized successfully! Token: {token_data['access_token']}"
+        except requests.exceptions.RequestException as e:
+            print(f"Token exchange failed: {str(e)}, Response: {response.text}")
+            return f"Token exchange failed: {response.text}", 400
     error = request.args.get('error')
     if error:
+        print(f"OAuth error: {error} - {request.args.get('error_description')}")
         return f"OAuth error: {error} - {request.args.get('error_description')}", 400
+    print("No code provided in OAuth callback")
     return "Error: No code provided", 400
 
 # ScoreSaber and BeatLeader API endpoints
@@ -97,13 +95,11 @@ async def update_ranked_playlist():
     """Fetch and update ScoreSaber ranked playlist."""
     async with httpx.AsyncClient() as client:
         try:
-            # Fetch top 50 ranked maps (adjustable)
             url = f"{SCORESABER_API}/leaderboards?ranked=true&page=1&limit=50"
             response = await client.get(url)
             response.raise_for_status()
             data = response.json()
 
-            # Create playlist in Beat Saber playlist format
             playlist = {
                 "playlistTitle": "ScoreSaber Ranked Maps",
                 "playlistAuthor": "GrokBot",
@@ -125,7 +121,6 @@ async def update_ranked_playlist():
                 }
                 playlist["songs"].append(song)
 
-            # Save playlist to file
             async with aiofiles.open("playlist.json", "w") as f:
                 await f.write(json.dumps(playlist, indent=2))
 
@@ -136,11 +131,18 @@ async def update_ranked_playlist():
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user}")
-    update_playlist.start()  # Start the playlist update task
+    update_playlist.start()
+
+@bot.event
+async def on_message(message):
+    if message.author.bot:
+        return
+    print(f"Received message: {message.content} from {message.author} in {message.guild.id}")
+    await bot.process_commands(message)
 
 @bot.command()
 async def search(ctx, platform, player_id):
-    """Search for a player on ScoreSaber or BeatLeader."""
+    print(f"Executing !search for {platform} {player_id} in guild {ctx.guild.id}")
     result = await fetch_player_info(platform, player_id)
     if isinstance(result, dict):
         embed = discord.Embed(title=f"{result['name']}'s Profile ({platform})", color=0x00ff00)
@@ -154,7 +156,7 @@ async def search(ctx, platform, player_id):
 
 @bot.command()
 async def playlist(ctx):
-    """Share the latest ranked playlist."""
+    print(f"Executing !playlist in guild {ctx.guild.id}")
     if os.path.exists("playlist.json"):
         await ctx.send("Here's the latest ScoreSaber ranked playlist!", file=discord.File("playlist.json"))
     else:
@@ -162,30 +164,24 @@ async def playlist(ctx):
 
 @bot.command()
 async def update(ctx):
-    """Manually update the ranked playlist."""
+    print(f"Executing !update in guild {ctx.guild.id}")
     result = await update_ranked_playlist()
     await ctx.send(result)
 
 @tasks.loop(hours=24)
 async def update_playlist():
-    """Auto-update the ranked playlist every 24 hours."""
     print("Updating ranked playlist...")
     result = await update_ranked_playlist()
     print(result)
 
 def run_discord_bot():
-    """Run the Discord bot in an async loop."""
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     bot.run(os.getenv("DISCORD_TOKEN"))
 
 def main():
-    """Start Flask server and Discord bot in separate threads."""
-    # Start Discord bot in a separate thread
     bot_thread = threading.Thread(target=run_discord_bot)
     bot_thread.start()
-
-    # Start Flask server (bound to 0.0.0.0 for Render)
     port = int(os.getenv("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
 
