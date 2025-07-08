@@ -35,7 +35,7 @@ def oauth_callback():
                 'client_secret': os.getenv('CLIENT_SECRET'),
                 'grant_type': 'authorization_code',
                 'code': code,
-                'redirect_uri': 'https://bot-ytz9.onrender.com/oauth/callback',
+                'redirect_uri': os.getenv('REDIRECT_URI', 'https://your-app-url.herokuapp.com/oauth/callback'),
                 'scope': 'bot'
             }
             headers = {'Content-Type': 'application/x-www-form-urlencoded'}
@@ -45,8 +45,8 @@ def oauth_callback():
             print(f"Token exchange successful: {token_data}")
             return f"Bot authorized successfully! Token: {token_data['access_token']}"
         except requests.exceptions.RequestException as e:
-            print(f"Token exchange failed: {str(e)}, Response: {response.text}")
-            return f"Token exchange failed: {response.text}", 400
+            print(f"Token exchange failed: {str(e)}, Response: {response.text if response else 'No response'}")
+            return f"Token exchange failed: {response.text if response else str(e)}", 400
     error = request.args.get('error')
     if error:
         print(f"OAuth error: {error} - {request.args.get('error_description')}")
@@ -81,13 +81,15 @@ async def fetch_player_info(platform, player_id):
                 data = response.json()
                 return {
                     "name": data["name"],
-                    "rank": data["globalRank"],
+                    "rank": data["rank"],
                     "country": data["country"],
                     "pp": data["pp"],
                     "avatar": data["avatar"]
                 }
             else:
                 return None
+        except httpx.HTTPStatusError as e:
+            return f"HTTP error occurred: {str(e)}"
         except Exception as e:
             return f"Error fetching player info: {str(e)}"
 
@@ -115,7 +117,7 @@ async def update_ranked_playlist():
                     "difficulties": [
                         {
                             "characteristic": "Standard",
-                            "name": leaderboard["difficulty"]["difficulty"]
+                            "name": leaderboard["difficulty"]["difficulty"].capitalize()
                         }
                     ]
                 }
@@ -125,65 +127,119 @@ async def update_ranked_playlist():
                 await f.write(json.dumps(playlist, indent=2))
 
             return "Playlist updated successfully!"
+        except httpx.HTTPStatusError as e:
+            return f"HTTP error updating playlist: {str(e)}"
         except Exception as e:
             return f"Error updating playlist: {str(e)}"
 
 @bot.event
 async def on_ready():
-    print(f"Logged in as {bot.user}")
-    update_playlist.start()
+    print(f"Logged in as {bot.user.name} (ID: {bot.user.id})")
+    print(f"Connected to {len(bot.guilds)} guilds:")
+    for guild in bot.guilds:
+        print(f"- {guild.name} (ID: {guild.id})")
+    
+    if not update_playlist.is_running():
+        update_playlist.start()
 
 @bot.event
 async def on_message(message):
-    if message.author.bot:
+    if message.author == bot.user:
         return
-    print(f"Received message: {message.content} from {message.author} in {message.guild.id}")
     await bot.process_commands(message)
 
+@bot.command(name='ping')
+async def ping(ctx):
+    """Check if the bot is responsive"""
+    latency = round(bot.latency * 1000)
+    await ctx.send(f"Pong! Latency: {latency}ms")
+
 @bot.command()
-async def search(ctx, platform, player_id):
-    print(f"Executing !search for {platform} {player_id} in guild {ctx.guild.id}")
-    result = await fetch_player_info(platform, player_id)
+async def search(ctx, platform: str, player_id: str):
+    """Search for a player on ScoreSaber or BeatLeader"""
+    if platform.lower() not in ["scoresaber", "beatleader"]:
+        await ctx.send("Invalid platform. Use 'scoresaber' or 'beatleader'")
+        return
+    
+    async with ctx.typing():
+        result = await fetch_player_info(platform, player_id)
+        
     if isinstance(result, dict):
-        embed = discord.Embed(title=f"{result['name']}'s Profile ({platform})", color=0x00ff00)
-        embed.add_field(name="Global Rank", value=result["rank"], inline=True)
+        embed = discord.Embed(
+            title=f"{result['name']}'s Profile ({platform.capitalize()})",
+            color=discord.Color.blue()
+        )
+        embed.add_field(name="Global Rank", value=f"#{result['rank']:,}", inline=True)
         embed.add_field(name="Country", value=result["country"], inline=True)
-        embed.add_field(name="PP", value=f"{result['pp']}pp", inline=True)
+        embed.add_field(name="PP", value=f"{result['pp']:,.2f}pp", inline=True)
         embed.set_thumbnail(url=result["avatar"])
         await ctx.send(embed=embed)
     else:
-        await ctx.send(result)
+        await ctx.send(f"❌ {result}")
 
 @bot.command()
 async def playlist(ctx):
-    print(f"Executing !playlist in guild {ctx.guild.id}")
-    if os.path.exists("playlist.json"):
-        await ctx.send("Here's the latest ScoreSaber ranked playlist!", file=discord.File("playlist.json"))
-    else:
-        await ctx.send("Playlist not found. Try updating it with !update.")
+    """Get the latest ranked playlist"""
+    if not os.path.exists("playlist.json"):
+        await ctx.send("Playlist not found. Try updating it with `!update` first.")
+        return
+    
+    await ctx.send(
+        content="Here's the latest ScoreSaber ranked playlist!",
+        file=discord.File("playlist.json")
+    )
 
 @bot.command()
 async def update(ctx):
-    print(f"Executing !update in guild {ctx.guild.id}")
+    """Update the ranked playlist"""
+    message = await ctx.send("🔄 Updating playlist...")
     result = await update_ranked_playlist()
-    await ctx.send(result)
+    await message.edit(content=result)
 
 @tasks.loop(hours=24)
 async def update_playlist():
-    print("Updating ranked playlist...")
+    """Automatically update the playlist every 24 hours"""
+    print("Performing scheduled playlist update...")
     result = await update_ranked_playlist()
     print(result)
 
-def run_discord_bot():
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    bot.run(os.getenv("DISCORD_TOKEN"))
+@update_playlist.before_loop
+async def before_update_playlist():
+    """Wait until the bot is ready before starting the task"""
+    await bot.wait_until_ready()
+
+def run_flask():
+    """Run Flask web server"""
+    port = int(os.getenv("PORT", 5000))
+    app.run(host="0.0.0.0", port=port, use_reloader=False)
+
+def run_bot():
+    """Run Discord bot with error handling"""
+    token = os.getenv("DISCORD_TOKEN")
+    if not token:
+        print("Error: DISCORD_TOKEN environment variable is missing!")
+        return
+    
+    try:
+        bot.run(token)
+    except discord.LoginError:
+        print("Error: Invalid Discord token provided")
+    except Exception as e:
+        print(f"Failed to start bot: {e}")
 
 def main():
-    bot_thread = threading.Thread(target=run_discord_bot)
-    bot_thread.start()
-    port = int(os.getenv("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+    """Main entry point"""
+    required_vars = ['DISCORD_TOKEN', 'CLIENT_ID', 'CLIENT_SECRET']
+    missing_vars = [var for var in required_vars if not os.getenv(var)]
+    
+    if missing_vars:
+        print(f"Error: Missing required environment variables: {', '.join(missing_vars)}")
+        return
+    
+    flask_thread = threading.Thread(target=run_flask, daemon=True)
+    flask_thread.start()
+    
+    run_bot()
 
 if __name__ == "__main__":
     main()
