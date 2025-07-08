@@ -21,7 +21,7 @@ app = Flask(__name__)
 # Configuration
 CLIENT_ID = os.getenv('CLIENT_ID')
 CLIENT_SECRET = os.getenv('CLIENT_SECRET')
-REDIRECT_URI = os.getenv('REDIRECT_URI', 'https://your-app-url.herokuapp.com/oauth/callback')
+REDIRECT_URI = os.getenv('REDIRECT_URI', 'https://bot-ytz9.onrender.com/oauth/callback')
 BOT_TOKEN = os.getenv('DISCORD_TOKEN')
 REQUIRED_SCOPES = 'identify bot applications.commands'
 
